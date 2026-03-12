@@ -336,6 +336,8 @@ def simulate():
         indoor_count = int(points_wgs84["is_indoor"].sum())
         uncovered_count = total - covered_count
 
+        bounds = points_wgs84.total_bounds.tolist()
+
         return jsonify(
             {
                 "input": {
@@ -358,7 +360,11 @@ def simulate():
                     "uncovered_points": uncovered_count,
                     "coverage_pct": round((covered_count / total) * 100, 2) if total else 0.0,
                 },
-                "geojson": feature_collection,
+                "geojson": {
+                    "type": "FeatureCollection",
+                    "bounds": bounds,
+                    "features": feature_collection["features"],
+                }
             }
         )
     except ValueError as exc:

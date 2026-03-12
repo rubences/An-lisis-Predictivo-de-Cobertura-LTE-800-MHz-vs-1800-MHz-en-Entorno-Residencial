@@ -16,6 +16,7 @@ const dualModeCheckbox = document.getElementById("dualMode");
 const dualControls = document.getElementById("dualControls");
 const enableLOSCheckbox = document.getElementById("enableLOS");
 const attenuationWallInput = document.getElementById("attenuationWall");
+const visualizationModeInput = document.getElementById("visualizationMode");
 const runButton = document.getElementById("runSimulation");
 const statusBox = document.getElementById("status");
 const summaryBox = document.getElementById("summary");
@@ -25,6 +26,7 @@ const rasterImage = document.getElementById("rasterImage");
 let marker1 = null;
 let marker2 = null;
 let coverageLayer = null;
+let hexLayer = null;
 
 function colorForCoverage(covered) {
   return covered ? "#1a9850" : "#d73027";
@@ -32,6 +34,112 @@ function colorForCoverage(covered) {
 
 function getServerColor(server) {
   return server === "1" ? "#0066cc" : "#ff6600";
+}
+
+function rsrpToColor(rsrp) {
+  if (rsrp >= -80) return "#1a9850";      // Verde oscuro - excelente
+  if (rsrp >= -90) return "#66bb6a";      // Verde claro - muy buena
+  if (rsrp >= -100) return "#ffd166";     // Amarillo - aceptable
+  if (rsrp >= -110) return "#f97316";     // Naranja - pobre
+  return "#8b0000";                        // Rojo oscuro - sin servicio
+}
+
+function createHexBinnedLayer(geoJsonData, bounds) {
+  if (!geoJsonData || !geoJsonData.features || geoJsonData.features.length === 0) {
+    return null;
+  }
+
+  try {
+    const points = [];
+    geoJsonData.features.forEach(feature => {
+      const coord = feature.geometry.coordinates;
+      const props = feature.properties;
+      points.push({
+        type: "Feature",
+        geometry: { type: "Point", coordinates: coord },
+        properties: {
+          rsrp_dbm: props.rsrp_dbm,
+          server: props.server || "1",
+          is_indoor: props.is_indoor || false
+        }
+      });
+    });
+
+    const pointsFeatureCollection = {
+      type: "FeatureCollection",
+      features: points
+    };
+
+    const [minLon, minLat, maxLon, maxLat] = bounds;
+    const cellSize = 0.05;
+    
+    const hexGrid = turf.hexGrid([minLon, minLat, maxLon, maxLat], cellSize);
+
+    hexGrid.features.forEach(hex => {
+      const hexCenter = turf.centroid(hex);
+      let sumRsrp = 0;
+      let sumWeights = 0;
+      let countServer1 = 0;
+      let countServer2 = 0;
+
+      const centerCoord = hexCenter.geometry.coordinates;
+
+      points.forEach(point => {
+        const pointCoord = point.geometry.coordinates;
+        const distance = turf.distance(centerCoord, pointCoord, { units: "kilometers" });
+        
+        if (distance < 0.01) {
+          sumRsrp += point.properties.rsrp_dbm;
+          sumWeights += 1000;
+          if (point.properties.server === "1") countServer1++;
+          else countServer2++;
+        } else {
+          const weight = 1 / (distance * distance);
+          sumRsrp += point.properties.rsrp_dbm * weight;
+          sumWeights += weight;
+          if (point.properties.server === "1") countServer1++;
+          else countServer2++;
+        }
+      });
+
+      const interpolatedRsrp = sumWeights > 0 ? sumRsrp / sumWeights : -120;
+      const dominantServer = countServer1 >= countServer2 ? "1" : "2";
+
+      hex.properties = {
+        rsrp_dbm: Math.round(interpolatedRsrp * 10) / 10,
+        server: dominantServer,
+        pointCount: countServer1 + countServer2
+      };
+    });
+
+    const hexGeoJSON = L.geoJSON(hexGrid, {
+      style: (feature) => {
+        const rsrp = feature.properties.rsrp_dbm;
+        const color = rsrpToColor(rsrp);
+        
+        return {
+          fillColor: color,
+          weight: 1,
+          opacity: 0.7,
+          color: "#333",
+          fillOpacity: 0.65
+        };
+      },
+      onEachFeature: (feature, layer) => {
+        const props = feature.properties;
+        layer.bindPopup(
+          `RSRP (interpolado): ${props.rsrp_dbm} dBm<br>` +
+          `Mejor servidor: eNodeB ${props.server}<br>` +
+          `Puntos en celda: ${props.pointCount}`
+        );
+      }
+    });
+
+    return hexGeoJSON;
+  } catch (error) {
+    console.error("Error en hex binning:", error);
+    return null;
+  }
 }
 
 map.on("click", (event) => {
@@ -132,41 +240,57 @@ async function runSimulation() {
       `;
       statusBox.textContent = "Simulación completada (Raster).";      
     } else if (data.geojson) {
-      coverageLayer = L.geoJSON(data.geojson, {
-        pointToLayer: (feature, latlng) => {
-          const server = feature.properties.server || "1";
-          return L.circleMarker(latlng, {
-            radius: 4,
-            color: dualModeCheckbox.checked ? getServerColor(server) : colorForCoverage(feature.properties.covered),
-            fillColor: dualModeCheckbox.checked ? getServerColor(server) : colorForCoverage(feature.properties.covered),
-            fillOpacity: 0.72,
-            weight: 0.2,
-          });
-        },
-        onEachFeature: (feature, layer) => {
-          const props = feature.properties;
-          const indoorLabel = props.is_indoor ? " (Interior)" : "";
-          const serverLabel = dualModeCheckbox.checked ? `<br>Servidor: eNodeB ${props.server}` : "";
-          const losLabel = props.num_buildings_los > 0 ? `<br>Edificios LOS: ${props.num_buildings_los}` : "";
-          layer.bindPopup(
-            `RSRP: ${props.rsrp_dbm} dBm<br>` +
-            `Distancia: ${props.distancia_km} km<br>` +
-            `Cobertura: ${props.covered ? "Sí" : "No"}${indoorLabel}${serverLabel}${losLabel}`
-          );
-        },
-      }).addTo(map);
-
-      map.fitBounds(coverageLayer.getBounds(), { padding: [20, 20] });
-
+      const visualMode = visualizationModeInput.value;
       const dualLabel = dualModeCheckbox.checked ? " (Dual eNodeB)" : "";
+
+      if (visualMode === "hex") {
+        hexLayer = createHexBinnedLayer(data.geojson, data.geojson.bounds);
+        if (hexLayer) {
+          coverageLayer = hexLayer.addTo(map);
+          map.fitBounds(hexLayer.getBounds(), { padding: [20, 20] });
+          statusBox.textContent = "Simulación completada (Hex-Binning IDW).";
+        } else {
+          statusBox.textContent = "Error en interpolación hex binning, mostrando puntos.";
+          visualMode = "points";
+        }
+      }
+
+      if (visualMode === "points") {
+        coverageLayer = L.geoJSON(data.geojson, {
+          pointToLayer: (feature, latlng) => {
+            const server = feature.properties.server || "1";
+            return L.circleMarker(latlng, {
+              radius: 4,
+              color: dualModeCheckbox.checked ? getServerColor(server) : colorForCoverage(feature.properties.covered),
+              fillColor: dualModeCheckbox.checked ? getServerColor(server) : colorForCoverage(feature.properties.covered),
+              fillOpacity: 0.72,
+              weight: 0.2,
+            });
+          },
+          onEachFeature: (feature, layer) => {
+            const props = feature.properties;
+            const indoorLabel = props.is_indoor ? " (Interior)" : "";
+            const serverLabel = dualModeCheckbox.checked ? `<br>Servidor: eNodeB ${props.server}` : "";
+            const losLabel = props.num_buildings_los > 0 ? `<br>Edificios LOS: ${props.num_buildings_los}` : "";
+            layer.bindPopup(
+              `RSRP: ${props.rsrp_dbm} dBm<br>` +
+              `Distancia: ${props.distancia_km} km<br>` +
+              `Cobertura: ${props.covered ? "Sí" : "No"}${indoorLabel}${serverLabel}${losLabel}`
+            );
+          },
+        }).addTo(map);
+
+        map.fitBounds(coverageLayer.getBounds(), { padding: [20, 20] });
+        statusBox.textContent = "Simulación completada (Puntos).";
+      }
+
       summaryBox.innerHTML = `
-        <strong>Resultado (Puntos)${dualLabel}:</strong><br>
+        <strong>Resultado${dualLabel}:</strong><br>
         Puntos evaluados: ${data.summary.total_points}<br>
         Cobertura: ${data.summary.covered_points} (${data.summary.coverage_pct}%)<br>
         Interiores: ${data.summary.indoor_points}<br>
         Sin cobertura: ${data.summary.uncovered_points}
       `;
-      statusBox.textContent = "Simulación completada (Puntos).";      
     }
   } catch (error) {
     statusBox.textContent = `Error: ${error.message}`;

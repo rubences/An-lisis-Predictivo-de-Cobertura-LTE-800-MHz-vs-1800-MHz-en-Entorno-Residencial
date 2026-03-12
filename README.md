@@ -263,6 +263,39 @@ POST /api/simulate
 }
 ```
 
+### 9) Visualización Avanzada: Hex-Binning con Interpolación IDW
+
+**¿Por qué Hex-Binning?**
+- Los puntos discretos son académicamente precisos pero profesionalmente poco legibles.
+- Hex-Binning interpola el RSRP usando IDW (Inverse Distance Weighting) sobre una malla hexagonal continua.
+- Estándar en herramientas profesionales de RF Planning (Atoll, Mentum Planet, Ranplan).
+
+**Cómo funciona:**
+1. **Frontend (Turf.js)**: Tras recibir los puntos GeoJSON del backend:
+  - Crea una malla hexagonal sobre el área de análisis usando `turf.hexGrid()`
+  - Para cada hexágono, interpola RSRP usando IDW: $$RSRP_{hex} = \frac{\sum_{i} w_i \times RSRP_i}{\sum_{i} w_i} \quad \text{donde} \quad w_i = \frac{1}{d_i^2}$$
+  - Determina el servidor dominante en cada hexágono (mayoría de puntos)
+  - Colorea según RSRP interpolado (gradiente: rojo oscuro → naranja → amarillo → verde)
+
+2. **Modos de visualización:**
+  - **Puntos discretos**: Render original, rápido, académico
+  - **Hex-Binning**: Superficie continua, profesional, ideal para decisiones de despliegue
+
+3. **Interactividad:**
+  - Clic en hexágono → popup con:
+    - RSRP interpolado (dBm)
+    - Mejor servidor (eNodeB 1 o 2)
+    - Número de puntos en la celda
+
+4. **Paleta de colores RSRP:**
+  | Rango | Color | Calidad |
+  |-------|-------|---------|
+  | RSRP > -80 dBm | Verde oscuro | Excelente |
+  | -80 ≥ RSRP > -90 dBm | Verde claro | Muy buena |
+  | -90 ≥ RSRP > -100 dBm | Amarillo | Aceptable |
+  | -100 ≥ RSRP > -110 dBm | Naranja | Pobre |
+  | RSRP ≤ -110 dBm | Rojo oscuro | Sin servicio |
+
 ## Criterio operativo en mapas
 
 - **Cobertura válida**: `RSRP > -105 dBm`
