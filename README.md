@@ -296,6 +296,19 @@ POST /api/simulate
   | -100 ≥ RSRP > -110 dBm | Naranja | Pobre |
   | RSRP ≤ -110 dBm | Rojo oscuro | Sin servicio |
 
+### 10) Panel analítico en tiempo real (Chart.js)
+
+Se añadió un gráfico lateral tipo **Doughnut** que resume automáticamente la distribución de calidad tras cada simulación.
+
+- **Excelente**: `RSRP >= -90 dBm`
+- **Aceptable**: `-105 dBm <= RSRP < -90 dBm`
+- **Sin cobertura**: `RSRP < -105 dBm`
+
+**Fuente de datos del gráfico:**
+- Si la visualización está en **Hex-Binning**, el porcentaje se calcula sobre los hexágonos interpolados.
+- Si está en **Puntos**, el porcentaje se calcula sobre los puntos discretos GeoJSON.
+- En modo **Raster**, se usa el resumen agregado del backend.
+
 ## Criterio operativo en mapas
 
 - **Cobertura válida**: `RSRP > -105 dBm`

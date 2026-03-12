@@ -20,6 +20,8 @@ const visualizationModeInput = document.getElementById("visualizationMode");
 const runButton = document.getElementById("runSimulation");
 const statusBox = document.getElementById("status");
 const summaryBox = document.getElementById("summary");
+const chartCanvas = document.getElementById("coverageChart");
+const chartSummary = document.getElementById("chartSummary");
 const rasterContainer = document.getElementById("rasterContainer");
 const rasterImage = document.getElementById("rasterImage");
 
@@ -27,6 +29,7 @@ let marker1 = null;
 let marker2 = null;
 let coverageLayer = null;
 let hexLayer = null;
+let coverageChart = null;
 
 function colorForCoverage(covered) {
   return covered ? "#1a9850" : "#d73027";
@@ -42,6 +45,97 @@ function rsrpToColor(rsrp) {
   if (rsrp >= -100) return "#ffd166";     // Amarillo - aceptable
   if (rsrp >= -110) return "#f97316";     // Naranja - pobre
   return "#8b0000";                        // Rojo oscuro - sin servicio
+}
+
+function classifyCoverageBucket(rsrp) {
+  if (rsrp >= -90) return "excellent";
+  if (rsrp >= -105) return "acceptable";
+  return "noCoverage";
+}
+
+function computeCoverageStats(features) {
+  const stats = {
+    excellent: 0,
+    acceptable: 0,
+    noCoverage: 0,
+    total: 0,
+  };
+
+  if (!features || !Array.isArray(features)) {
+    return stats;
+  }
+
+  features.forEach((feature) => {
+    const rsrp = feature?.properties?.rsrp_dbm;
+    if (typeof rsrp !== "number" || Number.isNaN(rsrp)) {
+      return;
+    }
+
+    const bucket = classifyCoverageBucket(rsrp);
+    stats[bucket] += 1;
+    stats.total += 1;
+  });
+
+  return stats;
+}
+
+function updateCoverageChart(stats, sourceLabel) {
+  if (!chartCanvas || !stats || stats.total === 0) {
+    if (chartSummary) {
+      chartSummary.textContent = "No hay datos suficientes para estadísticas.";
+    }
+    if (coverageChart) {
+      coverageChart.destroy();
+      coverageChart = null;
+    }
+    return;
+  }
+
+  const excellentPct = ((stats.excellent / stats.total) * 100).toFixed(1);
+  const acceptablePct = ((stats.acceptable / stats.total) * 100).toFixed(1);
+  const noCoveragePct = ((stats.noCoverage / stats.total) * 100).toFixed(1);
+
+  const data = [stats.excellent, stats.acceptable, stats.noCoverage];
+
+  if (coverageChart) {
+    coverageChart.data.datasets[0].data = data;
+    coverageChart.update();
+  } else {
+    const context = chartCanvas.getContext("2d");
+    coverageChart = new Chart(context, {
+      type: "doughnut",
+      data: {
+        labels: ["Excelente", "Aceptable", "Sin cobertura"],
+        datasets: [
+          {
+            data,
+            backgroundColor: ["#1a9850", "#ffd166", "#8b0000"],
+            borderWidth: 1,
+            borderColor: "#ffffff",
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: {
+            position: "bottom",
+            labels: {
+              boxWidth: 10,
+              font: { size: 11 },
+            },
+          },
+        },
+      },
+    });
+  }
+
+  if (chartSummary) {
+    chartSummary.innerHTML =
+      `Base: ${sourceLabel}<br>` +
+      `Excelente: ${excellentPct}% · Aceptable: ${acceptablePct}% · Sin cobertura: ${noCoveragePct}%`;
+  }
 }
 
 function createHexBinnedLayer(geoJsonData, bounds) {
@@ -135,6 +229,7 @@ function createHexBinnedLayer(geoJsonData, bounds) {
       }
     });
 
+    hexGeoJSON.hexGridData = hexGrid;
     return hexGeoJSON;
   } catch (error) {
     console.error("Error en hex binning:", error);
@@ -195,6 +290,9 @@ async function runSimulation() {
   runButton.disabled = true;
   statusBox.textContent = "Ejecutando simulación...";
   summaryBox.textContent = "";
+  if (chartSummary) {
+    chartSummary.textContent = "Calculando estadísticas...";
+  }
   rasterContainer.style.display = "none";
 
   try {
@@ -238,9 +336,18 @@ async function runSimulation() {
         Interiores: ${data.summary.indoor_points}<br>
         Sin cobertura: ${data.summary.uncovered_points}
       `;
+      updateCoverageChart(
+        {
+          excellent: 0,
+          acceptable: data.summary.covered_points,
+          noCoverage: data.summary.uncovered_points,
+          total: data.summary.total_points,
+        },
+        "puntos raster"
+      );
       statusBox.textContent = "Simulación completada (Raster).";      
     } else if (data.geojson) {
-      const visualMode = visualizationModeInput.value;
+      let visualMode = visualizationModeInput.value;
       const dualLabel = dualModeCheckbox.checked ? " (Dual eNodeB)" : "";
 
       if (visualMode === "hex") {
@@ -248,6 +355,8 @@ async function runSimulation() {
         if (hexLayer) {
           coverageLayer = hexLayer.addTo(map);
           map.fitBounds(hexLayer.getBounds(), { padding: [20, 20] });
+          const hexStats = computeCoverageStats(hexLayer.hexGridData?.features || []);
+          updateCoverageChart(hexStats, "hexágonos IDW");
           statusBox.textContent = "Simulación completada (Hex-Binning IDW).";
         } else {
           statusBox.textContent = "Error en interpolación hex binning, mostrando puntos.";
@@ -281,6 +390,8 @@ async function runSimulation() {
         }).addTo(map);
 
         map.fitBounds(coverageLayer.getBounds(), { padding: [20, 20] });
+        const pointStats = computeCoverageStats(data.geojson.features || []);
+        updateCoverageChart(pointStats, "puntos discretos");
         statusBox.textContent = "Simulación completada (Puntos).";
       }
 

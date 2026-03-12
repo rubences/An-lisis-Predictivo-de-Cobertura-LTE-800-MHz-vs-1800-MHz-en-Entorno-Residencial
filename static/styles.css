@@ -87,6 +87,25 @@ body {
   font-size: 0.88rem;
 }
 
+.chart-card {
+  margin-top: 12px;
+  padding: 10px;
+  border: 1px solid #dfe3e8;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.chart-card h3 {
+  margin: 0 0 8px;
+  font-size: 0.9rem;
+}
+
+.chart-summary {
+  margin-top: 8px;
+  font-size: 0.82rem;
+  color: #4f5d75;
+}
+
 .legend {
   margin-top: 14px;
   font-size: 0.86rem;
