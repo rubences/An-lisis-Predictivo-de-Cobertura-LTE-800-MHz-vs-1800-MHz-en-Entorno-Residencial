@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Simulación LTE con Leaflet + Flask</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>Simulación de Cobertura LTE</h1>
+    <p>Selecciona coordenadas en el mapa y ejecuta la simulación (COST-231/Okumura-Hata).</p>
+  </header>
+
+  <main class="layout">
+    <section class="panel">
+      <h2>Parámetros</h2>
+
+      <label for="lat">Latitud</label>
+      <input id="lat" type="text" readonly placeholder="Haz clic en el mapa" />
+
+      <label for="lon">Longitud</label>
+      <input id="lon" type="text" readonly placeholder="Haz clic en el mapa" />
+
+      <label for="frequency">Frecuencia</label>
+      <select id="frequency">
+        <option value="800">800 MHz</option>
+        <option value="1800">1800 MHz</option>
+      </select>
+
+      <label for="radius">Radio (m)</label>
+      <input id="radius" type="number" min="100" max="3000" step="50" value="500" />
+
+      <button id="runSimulation">Ejecutar Simulación</button>
+
+      <div id="status" class="status">Esperando coordenadas...</div>
+
+      <div id="summary" class="summary"></div>
+
+      <div class="legend">
+        <h3>Leyenda</h3>
+        <div><span class="dot covered"></span> Cobertura &gt; -105 dBm</div>
+        <div><span class="dot uncovered"></span> Zona sin cobertura</div>
+      </div>
+    </section>
+
+    <section class="map-wrapper">
+      <div id="map"></div>
+    </section>
+  </main>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

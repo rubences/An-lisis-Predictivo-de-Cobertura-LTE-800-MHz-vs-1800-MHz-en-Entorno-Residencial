@@ -35,6 +35,60 @@ pip install -r requirements.txt
 
 Incluye stack geoespacial (`osmnx`, `geopandas`, `shapely`).
 
+Incluye backend/API (`Flask`, `flask-cors`) para simulación interactiva web.
+
+## Modo Web Interactivo (Leaflet + Flask)
+
+### 1) Arranque
+
+```bash
+python app.py
+```
+
+Abrir en navegador:
+
+`http://localhost:5000`
+
+### 2) Frontend
+
+- Visor con Leaflet sobre mapa base OpenStreetMap.
+- Clic en mapa para capturar latitud y longitud del eNodeB.
+- Formulario para seleccionar frecuencia (`800` / `1800` MHz) y radio de análisis.
+- Botón **Ejecutar Simulación**.
+
+### 3) API backend
+
+- Endpoint: `POST /api/simulate`
+- Endpoint health: `GET /api/health`
+- CORS habilitado para rutas `/api/*`.
+
+Ejemplo de payload:
+
+```json
+{
+	"lat": 40.4916,
+	"lon": -3.7212,
+	"frecuencia_mhz": 800,
+	"radio_m": 500,
+	"umbral_dbm": -105,
+	"muestreo_m": 30
+}
+```
+
+### 4) Motor de cálculo dinámico
+
+- OSMnx descarga dinámicamente la red viaria en un radio alrededor de la coordenada.
+- Se muestrean puntos sobre calles y se calcula distancia real al eNodeB.
+- Se calcula RSRP (COST-231/Okumura-Hata según frecuencia) por punto.
+- El backend devuelve GeoJSON con atributos de cobertura.
+
+### 5) Visualización de resultados
+
+- El frontend renderiza la capa georreferenciada sobre Leaflet.
+- Colores:
+	- Verde: `RSRP > -105 dBm`
+	- Rojo: `RSRP <= -105 dBm`
+
 ## Salidas en `resultados/`
 
 - `figura1_perdida_trayecto.png`
