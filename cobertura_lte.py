@@ -20,6 +20,15 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import pandas as pd
 
+try:
+    import osmnx as ox
+    import geopandas as gpd
+    from shapely.geometry import Point
+except ImportError:  # pragma: no cover - dependencias opcionales en tiempo de ejecución
+    ox = None
+    gpd = None
+    Point = None
+
 # ---------------------------------------------------------------------------
 # Parámetros del escenario residencial
 # ---------------------------------------------------------------------------
@@ -70,6 +79,15 @@ BANDS = {
         "linestyle": "--",
         "label": "LTE 1800 MHz (Banda 3)",
     },
+}
+
+# Configuración geoespacial (barrio real de OpenStreetMap + eNodeB virtual)
+GEOSPATIAL_CONFIG = {
+    "lugar": "Mirasierra, Madrid, Spain",
+    "enodeb_lat": 40.4916,
+    "enodeb_lon": -3.7212,
+    "umbral_operativo_dbm": -105,
+    "muestreo_calles_m": 35,
 }
 
 # ---------------------------------------------------------------------------
@@ -707,11 +725,253 @@ def figura_ganancia_frecuencia(output_dir: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Flujo geoespacial con OSMnx
+# ---------------------------------------------------------------------------
+
+
+def _requerir_dependencias_geoespaciales() -> None:
+    """Valida que OSMnx/GeoPandas estén disponibles."""
+    if ox is None or gpd is None:
+        raise RuntimeError(
+            "No se encontraron dependencias geoespaciales. "
+            "Instala requirements.txt para habilitar OSMnx y GeoPandas."
+        )
+
+
+def descargar_geometria_barrio(lugar: str) -> dict:
+    """Descarga geometría real de barrio (calles y edificios) desde OpenStreetMap."""
+    _requerir_dependencias_geoespaciales()
+
+    borde = ox.geocode_to_gdf(lugar)
+    grafo = ox.graph_from_place(lugar, network_type="drive")
+    edificios = ox.features_from_place(lugar, tags={"building": True})
+
+    grafo_proj = ox.project_graph(grafo)
+    nodos, aristas = ox.graph_to_gdfs(grafo_proj)
+
+    borde_proj = borde.to_crs(nodos.crs)
+    edificios = edificios.to_crs(nodos.crs)
+
+    if "geometry" in edificios:
+        edificios = edificios[edificios.geometry.type.isin(["Polygon", "MultiPolygon"])]
+
+    return {
+        "borde": borde_proj,
+        "nodos": nodos,
+        "aristas": aristas,
+        "edificios": edificios,
+        "crs": nodos.crs,
+    }
+
+
+def punto_enodeb_proyectado(
+    lat: float, lon: float, crs_objetivo, borde: "gpd.GeoDataFrame"
+) -> Point:
+    """Obtiene el punto eNodeB en CRS proyectado; si queda fuera, usa el centroide."""
+    punto_wgs84 = gpd.GeoSeries([Point(lon, lat)], crs="EPSG:4326")
+    punto_proj = punto_wgs84.to_crs(crs_objetivo).iloc[0]
+    if not borde.geometry.iloc[0].contains(punto_proj):
+        return borde.geometry.iloc[0].centroid
+    return punto_proj
+
+
+def _muestrear_puntos_en_aristas(aristas: "gpd.GeoDataFrame", paso_m: float) -> "gpd.GeoDataFrame":
+    """Muestrea puntos regularmente a lo largo de las calles."""
+    puntos = []
+    for geom in aristas.geometry:
+        if geom is None or geom.is_empty:
+            continue
+        longitud = geom.length
+        if longitud <= 0:
+            continue
+        n = max(1, int(longitud // paso_m))
+        for idx in range(n + 1):
+            distancia = min(longitud, idx * paso_m)
+            puntos.append(geom.interpolate(distancia))
+
+    if not puntos:
+        return gpd.GeoDataFrame(geometry=[], crs=aristas.crs)
+
+    return gpd.GeoDataFrame(geometry=puntos, crs=aristas.crs)
+
+
+def calcular_cobertura_geoespacial(
+    data_geo: dict,
+    scenario: dict,
+    lb: dict,
+    geocfg: dict,
+    entorno: str = "urbano",
+) -> tuple:
+    """Calcula distancia, Path Loss y RSRP para 800/1800 MHz sobre calles reales."""
+    enodeb = punto_enodeb_proyectado(
+        geocfg["enodeb_lat"],
+        geocfg["enodeb_lon"],
+        data_geo["crs"],
+        data_geo["borde"],
+    )
+
+    puntos = _muestrear_puntos_en_aristas(data_geo["aristas"], geocfg["muestreo_calles_m"]).copy()
+    if puntos.empty:
+        raise RuntimeError("No se pudieron generar puntos de muestreo sobre las calles del barrio.")
+
+    puntos["distancia_km"] = (
+        puntos.geometry.distance(enodeb).clip(lower=scenario["distancia_min_km"] * 1000) / 1000.0
+    )
+
+    for nombre_banda, cfg in BANDS.items():
+        fc = cfg["frecuencia_mhz"]
+        sufijo = nombre_banda.split()[0]
+        puntos[f"pl_{sufijo}"] = puntos["distancia_km"].apply(
+            lambda d: perdida_trayecto(fc, d, scenario["altura_bs_m"], scenario["altura_movil_m"], entorno)
+        )
+        puntos[f"rsrp_{sufijo}"] = puntos["distancia_km"].apply(
+            lambda d: rsrp_dbm(fc, d, scenario, lb, incluir_penetracion=True, entorno=entorno)
+        )
+
+    umbral = geocfg["umbral_operativo_dbm"]
+    puntos["cumple_800"] = puntos["rsrp_800"] > umbral
+    puntos["cumple_1800"] = puntos["rsrp_1800"] > umbral
+    puntos["delta_rsrp_800_menos_1800"] = puntos["rsrp_800"] - puntos["rsrp_1800"]
+
+    return puntos, enodeb
+
+
+def figura_heatmap_geoespacial(
+    data_geo: dict,
+    puntos_cobertura: "gpd.GeoDataFrame",
+    enodeb: Point,
+    output_dir: str,
+    geocfg: dict,
+) -> None:
+    """Figura 7: heatmaps geoespaciales por banda con umbral -105 dBm."""
+    umbral = geocfg["umbral_operativo_dbm"]
+    fig, axes = plt.subplots(1, 2, figsize=(16, 8), sharex=True, sharey=True)
+
+    cmap = mcolors.LinearSegmentedColormap.from_list(
+        "umbral_rsrp",
+        ["#8b0000", "#ff5a5f", "#ffd166", "#8bd3a8", "#1b9e77"],
+        N=256,
+    )
+    norm = mcolors.TwoSlopeNorm(vmin=-125, vcenter=umbral, vmax=-70)
+
+    for ax, banda in zip(axes, ["800", "1800"]):
+        data_geo["edificios"].plot(ax=ax, color="#d9d9d9", alpha=0.6, linewidth=0)
+        data_geo["aristas"].plot(ax=ax, color="#888888", linewidth=0.6, alpha=0.8)
+
+        sc = ax.scatter(
+            puntos_cobertura.geometry.x,
+            puntos_cobertura.geometry.y,
+            c=puntos_cobertura[f"rsrp_{banda}"],
+            cmap=cmap,
+            norm=norm,
+            s=16,
+            alpha=0.9,
+            linewidths=0,
+        )
+
+        no_cubre = puntos_cobertura[~puntos_cobertura[f"cumple_{banda}"]]
+        ax.scatter(
+            no_cubre.geometry.x,
+            no_cubre.geometry.y,
+            facecolors="none",
+            edgecolors="#67000d",
+            linewidths=0.6,
+            s=18,
+            alpha=0.8,
+        )
+
+        ax.plot(enodeb.x, enodeb.y, marker="^", markersize=11, color="black")
+        ax.set_title(f"Heatmap RSRP {banda} MHz (umbral {umbral} dBm)", fontsize=12)
+        ax.set_axis_off()
+        ax.set_aspect("equal")
+
+    cbar = fig.colorbar(sc, ax=axes.ravel().tolist(), shrink=0.82, pad=0.01)
+    cbar.set_label("RSRP (dBm)", fontsize=10)
+    cbar.set_ticks([-120, -110, umbral, -95, -85, -75])
+
+    fig.suptitle(
+        f"Cobertura geoespacial LTE sobre calles reales\n{GEOSPATIAL_CONFIG['lugar']}",
+        fontsize=14,
+        fontweight="bold",
+    )
+    fig.subplots_adjust(left=0.02, right=0.96, top=0.88, bottom=0.02, wspace=0.03)
+    path = os.path.join(output_dir, "figura7_heatmap_geoespacial.png")
+    fig.savefig(path, dpi=170)
+    plt.close(fig)
+    print(f"  ✔ Guardada: {path}")
+
+
+def figura_comparativa_geoespacial(
+    data_geo: dict,
+    puntos_cobertura: "gpd.GeoDataFrame",
+    enodeb: Point,
+    output_dir: str,
+) -> None:
+    """Figura 8: mapa de ventaja de cobertura (RSRP 800 - RSRP 1800)."""
+    fig, ax = plt.subplots(figsize=(9, 8))
+    data_geo["edificios"].plot(ax=ax, color="#e0e0e0", alpha=0.6, linewidth=0)
+    data_geo["aristas"].plot(ax=ax, color="#8f8f8f", linewidth=0.5, alpha=0.8)
+
+    sc = ax.scatter(
+        puntos_cobertura.geometry.x,
+        puntos_cobertura.geometry.y,
+        c=puntos_cobertura["delta_rsrp_800_menos_1800"],
+        cmap="RdYlGn",
+        s=18,
+        alpha=0.9,
+        vmin=0,
+    )
+    ax.plot(enodeb.x, enodeb.y, marker="^", markersize=11, color="black", label="eNodeB virtual")
+    ax.legend(loc="upper right")
+    ax.set_title("Ventaja de 800 MHz frente a 1800 MHz sobre la red viaria", fontsize=12)
+    ax.set_axis_off()
+    ax.set_aspect("equal")
+
+    cbar = fig.colorbar(sc, ax=ax, shrink=0.85)
+    cbar.set_label("ΔRSRP (dB): 800 MHz − 1800 MHz", fontsize=10)
+
+    plt.tight_layout()
+    path = os.path.join(output_dir, "figura8_delta_geoespacial.png")
+    fig.savefig(path, dpi=170)
+    plt.close(fig)
+    print(f"  ✔ Guardada: {path}")
+
+
+def resumen_comparativo_geoespacial(
+    puntos_cobertura: "gpd.GeoDataFrame", geocfg: dict
+) -> dict:
+    """Métricas comparativas de cobertura en puntos de calle."""
+    umbral = geocfg["umbral_operativo_dbm"]
+    total = len(puntos_cobertura)
+    cub_800 = int(puntos_cobertura["cumple_800"].sum())
+    cub_1800 = int(puntos_cobertura["cumple_1800"].sum())
+
+    pct_800 = (cub_800 / total * 100) if total else 0.0
+    pct_1800 = (cub_1800 / total * 100) if total else 0.0
+    ventaja_media_db = float(puntos_cobertura["delta_rsrp_800_menos_1800"].mean()) if total else 0.0
+
+    return {
+        "umbral": umbral,
+        "puntos_totales": total,
+        "puntos_cubiertos_800": cub_800,
+        "puntos_cubiertos_1800": cub_1800,
+        "cobertura_pct_800": pct_800,
+        "cobertura_pct_1800": pct_1800,
+        "ventaja_media_db": ventaja_media_db,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Informe de texto
 # ---------------------------------------------------------------------------
 
 
-def imprimir_informe(scenario: dict, lb: dict, entorno: str = "urbano") -> None:
+def imprimir_informe(
+    scenario: dict,
+    lb: dict,
+    entorno: str = "urbano",
+    resumen_geo: dict | None = None,
+) -> None:
     """Imprime por consola el resumen ejecutivo del análisis."""
     separador = "=" * 70
     print(f"\n{separador}")
@@ -771,6 +1031,36 @@ def imprimir_informe(scenario: dict, lb: dict, entorno: str = "urbano") -> None:
         "  • Para el servicio de videollamadas/streaming en interior se recomienda\n"
         "    un umbral mínimo de RSRP ≥ −100 dBm, cubierto principalmente por 800 MHz."
     )
+
+    if resumen_geo:
+        print("\n── Validación geoespacial sobre calles reales (OpenStreetMap) ──")
+        print(f"  Lugar analizado          : {GEOSPATIAL_CONFIG['lugar']}")
+        print(
+            f"  eNodeB virtual (lat,lon) : "
+            f"({GEOSPATIAL_CONFIG['enodeb_lat']:.4f}, {GEOSPATIAL_CONFIG['enodeb_lon']:.4f})"
+        )
+        print(f"  Umbral de cobertura      : {resumen_geo['umbral']} dBm")
+        print(f"  Puntos de calle evaluados: {resumen_geo['puntos_totales']}")
+        print(
+            f"  Cobertura 800 MHz        : "
+            f"{resumen_geo['puntos_cubiertos_800']} puntos ({resumen_geo['cobertura_pct_800']:.1f}%)"
+        )
+        print(
+            f"  Cobertura 1800 MHz       : "
+            f"{resumen_geo['puntos_cubiertos_1800']} puntos ({resumen_geo['cobertura_pct_1800']:.1f}%)"
+        )
+        print(f"  Ventaja media 800-1800   : {resumen_geo['ventaja_media_db']:.2f} dB")
+
+        if resumen_geo["cobertura_pct_800"] >= resumen_geo["cobertura_pct_1800"]:
+            print(
+                "\n  ➤ Conclusión de despliegue inicial: priorizar 800 MHz para cobertura "
+                "residencial e indoor, y superponer 1800 MHz como capa de capacidad."
+            )
+        else:
+            print(
+                "\n  ➤ Conclusión de despliegue inicial: la huella geoespacial favorece 1800 MHz "
+                "en este barrio concreto; revisar potencia/altura para 800 MHz."
+            )
     print(f"\n{separador}\n")
 
 
@@ -795,7 +1085,40 @@ def main() -> None:
     figura_diferencia_cobertura(SCENARIO, LINK_BUDGET, output_dir)
     figura_ganancia_frecuencia(output_dir)
 
-    imprimir_informe(SCENARIO, LINK_BUDGET)
+    resumen_geo = None
+    try:
+        print("\nDescargando geometría real del barrio (OpenStreetMap)…")
+        data_geo = descargar_geometria_barrio(GEOSPATIAL_CONFIG["lugar"])
+        puntos_geo, enodeb_geo = calcular_cobertura_geoespacial(
+            data_geo, SCENARIO, LINK_BUDGET, GEOSPATIAL_CONFIG
+        )
+        figura_heatmap_geoespacial(data_geo, puntos_geo, enodeb_geo, output_dir, GEOSPATIAL_CONFIG)
+        figura_comparativa_geoespacial(data_geo, puntos_geo, enodeb_geo, output_dir)
+
+        path_geo = os.path.join(output_dir, "tabla_cobertura_geoespacial.csv")
+        columnas_exportar = [
+            "distancia_km",
+            "pl_800",
+            "pl_1800",
+            "rsrp_800",
+            "rsrp_1800",
+            "cumple_800",
+            "cumple_1800",
+            "delta_rsrp_800_menos_1800",
+            "geometry",
+        ]
+        puntos_geo[columnas_exportar].to_csv(path_geo, index=False)
+        print(f"  ✔ Tabla geoespacial guardada: {path_geo}")
+
+        resumen_geo = resumen_comparativo_geoespacial(puntos_geo, GEOSPATIAL_CONFIG)
+    except Exception as exc:
+        print(
+            "  ⚠ No se pudo completar la fase geoespacial con OSMnx. "
+            f"Motivo: {exc}"
+        )
+        print("    Continúa el análisis paramétrico clásico (distancia radial).")
+
+    imprimir_informe(SCENARIO, LINK_BUDGET, resumen_geo=resumen_geo)
 
     # Guardar tabla en CSV
     tabla = calcular_tabla_resumen(SCENARIO, LINK_BUDGET)

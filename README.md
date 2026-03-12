@@ -1,144 +1,69 @@
-# Análisis Predictivo de Cobertura LTE: 800 MHz vs 1800 MHz en Entorno Residencial
+# Análisis Predictivo de Cobertura LTE: 800 MHz vs 1800 MHz
 
-Herramienta de análisis y visualización para comparar la cobertura de dos
-portadoras LTE —**800 MHz (Banda 20)** y **1800 MHz (Banda 3)**— en un barrio
-residencial con calles estrechas y edificaciones de 4 a 6 plantas.
+Comparativa de cobertura LTE en entorno residencial, combinando:
+- modelo de propagación COST-231/Okumura-Hata,
+- extracción geoespacial real desde OpenStreetMap (OSMnx),
+- mapas de calor con umbral de servicio en **RSRP > -105 dBm**.
 
-El núcleo del proyecto transforma el modelo matemático de propagación
-**COST-231 Hata** (y su predecesor Okumura-Hata) en gráficas y tablas que
-facilitan la toma de decisiones de despliegue para servicios críticos:
-videollamadas, *streaming* y mensajería.
+## Qué hace el script
 
----
+Al ejecutar `python cobertura_lte.py`:
+1. Descarga un barrio real (`Mirasierra, Madrid, Spain`) con su red viaria y edificios desde OSM.
+2. Define un eNodeB virtual en coordenadas lat/lon configurables.
+3. Calcula Path Loss y RSRP para **800 MHz** y **1800 MHz** sobre puntos de calle.
+4. Genera heatmaps geoespaciales y una comparativa de ventaja de 800 frente a 1800.
+5. Emite un informe con recomendación de despliegue (cobertura vs capacidad).
 
-## Estructura del proyecto
+## Modelos implementados
 
-```
-.
-├── cobertura_lte.py          # Script principal de análisis
-├── requirements.txt          # Dependencias Python
-├── tests/
-│   └── test_cobertura_lte.py # Tests unitarios (pytest)
-└── resultados/               # Figuras y CSV generados (se crea al ejecutar)
-    ├── figura1_perdida_trayecto.png
-    ├── figura2_rsrp_vs_distancia.png
-    ├── figura3_radios_cobertura.png
-    ├── figura4_mapa_cobertura_2d.png
-    ├── figura5_diferencia_cobertura.png
-    ├── figura6_perdida_vs_frecuencia.png
-    └── tabla_cobertura.csv
-```
+- **Okumura-Hata urbano** para 800 MHz (rango 150–1500 MHz).
+- **COST-231 Hata** para 1800 MHz (rango 1500–2000 MHz).
 
----
+RSRP calculado mediante link budget:
 
-## Instalación
+`RSRP = EIRP - PathLoss + G_UE - márgenes - pérdidas de penetración`
+
+## Dependencias
+
+Instalación:
 
 ```bash
 pip install -r requirements.txt
 ```
 
----
+Incluye stack geoespacial (`osmnx`, `geopandas`, `shapely`).
 
-## Uso
+## Salidas en `resultados/`
 
-```bash
-python cobertura_lte.py
-```
+- `figura1_perdida_trayecto.png`
+- `figura2_rsrp_vs_distancia.png`
+- `figura3_radios_cobertura.png`
+- `figura4_mapa_cobertura_2d.png`
+- `figura5_diferencia_cobertura.png`
+- `figura6_perdida_vs_frecuencia.png`
+- `figura7_heatmap_geoespacial.png`
+- `figura8_delta_geoespacial.png`
+- `tabla_cobertura.csv`
+- `tabla_cobertura_geoespacial.csv`
 
-El script:
-1. Calcula la pérdida de trayecto y el RSRP para distancias de 0,1 a 5 km.
-2. Estima el radio de cobertura para cinco umbrales de calidad de servicio.
-3. Genera seis figuras PNG y un CSV en la carpeta `resultados/`.
-4. Imprime por consola un informe ejecutivo con la recomendación de despliegue.
+## Criterio operativo en mapas
 
----
+- **Cobertura válida**: `RSRP > -105 dBm`
+- **Zona ciega**: `RSRP < -105 dBm`
 
-## Modelos de propagación implementados
+En los heatmaps, el colormap está centrado en `-105 dBm` para separar visualmente ambas zonas.
 
-| Frecuencia | Modelo              | Rango de validez  |
-|------------|---------------------|-------------------|
-| 800 MHz    | Okumura-Hata urbano | 150 – 1 500 MHz   |
-| 1 800 MHz  | COST-231 Hata       | 1 500 – 2 000 MHz |
+## Conclusión técnica esperada (fase inicial)
 
-### Fórmula Okumura-Hata (urbano)
+- **800 MHz**: preferible como capa inicial de cobertura por mayor alcance y mejor penetración.
+- **1800 MHz**: preferible como capa de capacidad en zonas densas y con más tráfico.
 
-```
-L₅₀ [dB] = 69,55 + 26,16·log(fc) – 13,82·log(hb) – a(hm)
-            + (44,9 – 6,55·log(hb))·log(d)
-```
-
-### Fórmula COST-231 Hata (urbano)
-
-```
-L₅₀ [dB] = 46,3 + 33,9·log(fc) – 13,82·log(hb) – a(hm)
-            + (44,9 – 6,55·log(hb))·log(d) + Cₘ   [Cₘ = 3 dB urbano]
-```
-
-donde:
-- `fc` = frecuencia portadora (MHz)
-- `hb` = altura de la antena de la BS (m)
-- `hm` = altura del terminal móvil (m)
-- `d`  = distancia BS–terminal (km)
-- `a(hm)` = factor de corrección de altura del terminal
-
----
-
-## Parámetros del escenario
-
-| Parámetro                    | Valor            |
-|------------------------------|------------------|
-| Entorno                      | Barrio residencial, calles estrechas |
-| Altura edificios              | ~15 m (4–6 plantas) |
-| Altura antena BS             | 25 m             |
-| Altura terminal móvil        | 1,5 m            |
-| EIRP de la BS                | 58 dBm           |
-| Pérdidas de penetración      | 15 dB            |
-| Margen de desvanecimiento    | 8 dB             |
-| Margen de interferencia      | 3 dB             |
-
----
-
-## Umbrales de calidad de servicio (RSRP)
-
-| Categoría      | RSRP (dBm) | Servicios garantizados               |
-|---------------|------------|--------------------------------------|
-| Excelente     | ≥ −80      | Todos los servicios                  |
-| Buena         | ≥ −90      | Videollamadas HD, streaming 4K       |
-| **Aceptable** | **≥ −100** | **Videollamadas, streaming, mensajería** |
-| Pobre         | ≥ −110     | Solo mensajería / voz                |
-| Sin servicio  | < −120     | —                                    |
-
----
-
-## Resultados clave (umbral de servicio aceptable: −100 dBm)
-
-| Banda     | Radio exterior | Área exterior | Radio interior | Área interior |
-|-----------|---------------|---------------|---------------|--------------|
-| 800 MHz   | 3,825 km      | 45,96 km²     | 1,458 km      | 6,67 km²     |
-| 1 800 MHz | 1,536 km      | 7,41 km²      | 0,581 km      | 1,06 km²     |
-
-> **La banda de 800 MHz cubre ~6,3× más área interior** que la de 1 800 MHz,
-> lo que significa que se necesitarían aproximadamente 6 celdas de 1 800 MHz
-> para igualar la cobertura de una sola celda de 800 MHz.
-
----
-
-## Recomendación de despliegue
-
-- **Capa de cobertura** → **800 MHz**: mayor alcance, mejor penetración en
-  edificios, ideal para garantizar servicio en toda el área del barrio.
-- **Capa de capacidad** → **1 800 MHz**: mayor ancho de banda disponible,
-  recomendada para zonas densas y usuarios próximos a la BS.
-- Para el umbral mínimo de videollamadas/streaming en interior
-  (RSRP ≥ −100 dBm), la cobertura recae principalmente en la **banda de 800 MHz**.
-
----
+Estrategia recomendada de despliegue:
+1. Encender primero 800 MHz para continuidad de servicio residencial/indoor.
+2. Densificar con 1800 MHz para absorber crecimiento de tráfico.
 
 ## Tests
 
 ```bash
 python -m pytest tests/ -v
 ```
-
-Los tests validan la correcta implementación de los modelos matemáticos,
-el cálculo del *link budget* y la estimación de radios de cobertura.
