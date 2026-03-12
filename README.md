@@ -10,9 +10,11 @@ Comparativa de cobertura LTE en entorno residencial, combinando:
 Al ejecutar `python cobertura_lte.py`:
 1. Descarga un barrio real (`Mirasierra, Madrid, Spain`) con su red viaria y edificios desde OSM.
 2. Define un eNodeB virtual en coordenadas lat/lon configurables.
-3. Calcula Path Loss y RSRP para **800 MHz** y **1800 MHz** sobre puntos de calle.
-4. Genera heatmaps geoespaciales y una comparativa de ventaja de 800 frente a 1800.
-5. Emite un informe con recomendación de despliegue (cobertura vs capacidad).
+3. Calcula automáticamente un **segundo eNodeB en el extremo opuesto del barrio**.
+4. Calcula Path Loss y RSRP para **800 MHz** y **1800 MHz** sobre puntos de calle.
+5. Evalúa mejora de huella total con 2 sitios frente a 1 sitio.
+6. Detecta zonas de **solape** (útiles para handover y sensibles a interferencia co-canal si el PCI no se planifica bien).
+7. Emite un informe con recomendación de despliegue (cobertura vs capacidad).
 
 ## Modelos implementados
 
@@ -43,6 +45,7 @@ Incluye stack geoespacial (`osmnx`, `geopandas`, `shapely`).
 - `figura6_perdida_vs_frecuencia.png`
 - `figura7_heatmap_geoespacial.png`
 - `figura8_delta_geoespacial.png`
+- `figura9_solape_dual_enodeb.png`
 - `tabla_cobertura.csv`
 - `tabla_cobertura_geoespacial.csv`
 
@@ -52,6 +55,17 @@ Incluye stack geoespacial (`osmnx`, `geopandas`, `shapely`).
 - **Zona ciega**: `RSRP < -105 dBm`
 
 En los heatmaps, el colormap está centrado en `-105 dBm` para separar visualmente ambas zonas.
+
+## Evaluación de 2 eNodeB
+
+El informe geoespacial incluye automáticamente:
+- Cobertura con 1 eNodeB vs cobertura combinada con 2 eNodeB (incremento en puntos porcentuales).
+- Zonas de solape por banda (800/1800 MHz).
+- Subconjunto de solape balanceado `|ΔRSRP| ≤ 3 dB`, donde son más probables handovers frecuentes.
+
+Interpretación de solape:
+- Solape útil: mejora continuidad de servicio y robustez de movilidad.
+- Solape excesivo sin planificación PCI/tilt/potencia: aumenta riesgo de interferencia co-canal y handovers no óptimos.
 
 ## Conclusión técnica esperada (fase inicial)
 
