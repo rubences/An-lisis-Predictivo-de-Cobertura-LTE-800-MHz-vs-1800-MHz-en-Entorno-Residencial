@@ -17,7 +17,10 @@ const dualControls = document.getElementById("dualControls");
 const enableLOSCheckbox = document.getElementById("enableLOS");
 const attenuationWallInput = document.getElementById("attenuationWall");
 const visualizationModeInput = document.getElementById("visualizationMode");
+const hexCellSizeInput = document.getElementById("hexCellSize");
+const idwPowerInput = document.getElementById("idwPower");
 const runButton = document.getElementById("runSimulation");
+const exportButton = document.getElementById("exportGeoJson");
 const statusBox = document.getElementById("status");
 const summaryBox = document.getElementById("summary");
 const chartCanvas = document.getElementById("coverageChart");
@@ -30,6 +33,7 @@ let marker2 = null;
 let coverageLayer = null;
 let hexLayer = null;
 let coverageChart = null;
+let currentExportGeoJson = null;
 
 function colorForCoverage(covered) {
   return covered ? "#1a9850" : "#d73027";
@@ -138,6 +142,18 @@ function updateCoverageChart(stats, sourceLabel) {
   }
 }
 
+function getHexCellSizeKm() {
+  const value = Number(hexCellSizeInput?.value);
+  if (!Number.isFinite(value)) return 0.08;
+  return Math.min(Math.max(value, 0.02), 1.0);
+}
+
+function getIdwPower() {
+  const value = Number(idwPowerInput?.value);
+  if (!Number.isFinite(value)) return 2;
+  return Math.min(Math.max(value, 1), 4);
+}
+
 function createHexBinnedLayer(geoJsonData, bounds) {
   if (!geoJsonData || !geoJsonData.features || geoJsonData.features.length === 0) {
     return null;
@@ -159,15 +175,11 @@ function createHexBinnedLayer(geoJsonData, bounds) {
       });
     });
 
-    const pointsFeatureCollection = {
-      type: "FeatureCollection",
-      features: points
-    };
-
     const [minLon, minLat, maxLon, maxLat] = bounds;
-    const cellSize = 0.05;
+    const cellSize = getHexCellSizeKm();
+    const idwPower = getIdwPower();
     
-    const hexGrid = turf.hexGrid([minLon, minLat, maxLon, maxLat], cellSize);
+    const hexGrid = turf.hexGrid([minLon, minLat, maxLon, maxLat], cellSize, { units: "kilometers" });
 
     hexGrid.features.forEach(hex => {
       const hexCenter = turf.centroid(hex);
@@ -188,7 +200,7 @@ function createHexBinnedLayer(geoJsonData, bounds) {
           if (point.properties.server === "1") countServer1++;
           else countServer2++;
         } else {
-          const weight = 1 / (distance * distance);
+          const weight = 1 / Math.pow(distance, idwPower);
           sumRsrp += point.properties.rsrp_dbm * weight;
           sumWeights += weight;
           if (point.properties.server === "1") countServer1++;
@@ -202,7 +214,9 @@ function createHexBinnedLayer(geoJsonData, bounds) {
       hex.properties = {
         rsrp_dbm: Math.round(interpolatedRsrp * 10) / 10,
         server: dominantServer,
-        pointCount: countServer1 + countServer2
+        pointCount: countServer1 + countServer2,
+        idw_power: idwPower,
+        hex_size_km: cellSize,
       };
     });
 
@@ -235,6 +249,47 @@ function createHexBinnedLayer(geoJsonData, bounds) {
     console.error("Error en hex binning:", error);
     return null;
   }
+}
+
+function updateExportData(geoJsonData, mode) {
+  currentExportGeoJson = geoJsonData;
+  if (exportButton) {
+    exportButton.disabled = !currentExportGeoJson;
+    if (currentExportGeoJson) {
+      exportButton.textContent = `Exportar GeoJSON (${mode})`;
+    } else {
+      exportButton.textContent = "Exportar GeoJSON";
+    }
+  }
+}
+
+function downloadCurrentGeoJson() {
+  if (!currentExportGeoJson) {
+    statusBox.textContent = "No hay una capa GeoJSON disponible para exportar.";
+    return;
+  }
+
+  const payload = {
+    ...currentExportGeoJson,
+    export_meta: {
+      generated_at: new Date().toISOString(),
+      visualization_mode: visualizationModeInput.value,
+      hex_size_km: getHexCellSizeKm(),
+      idw_power: getIdwPower(),
+    },
+  };
+
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/geo+json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  link.href = url;
+  link.download = `simulacion_lte_${timestamp}.geojson`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+  statusBox.textContent = "GeoJSON exportado correctamente.";
 }
 
 map.on("click", (event) => {
@@ -288,6 +343,9 @@ async function runSimulation() {
   }
 
   runButton.disabled = true;
+  if (exportButton) {
+    exportButton.disabled = true;
+  }
   statusBox.textContent = "Ejecutando simulación...";
   summaryBox.textContent = "";
   if (chartSummary) {
@@ -326,6 +384,7 @@ async function runSimulation() {
     }
 
     if (data.raster_b64) {
+      updateExportData(null, "raster");
       rasterImage.src = data.raster_b64;
       rasterContainer.style.display = "block";
       const dualLabel = dualModeCheckbox.checked ? " (Dual eNodeB)" : "";
@@ -357,6 +416,7 @@ async function runSimulation() {
           map.fitBounds(hexLayer.getBounds(), { padding: [20, 20] });
           const hexStats = computeCoverageStats(hexLayer.hexGridData?.features || []);
           updateCoverageChart(hexStats, "hexágonos IDW");
+          updateExportData(hexLayer.hexGridData, "hex");
           statusBox.textContent = "Simulación completada (Hex-Binning IDW).";
         } else {
           statusBox.textContent = "Error en interpolación hex binning, mostrando puntos.";
@@ -392,6 +452,7 @@ async function runSimulation() {
         map.fitBounds(coverageLayer.getBounds(), { padding: [20, 20] });
         const pointStats = computeCoverageStats(data.geojson.features || []);
         updateCoverageChart(pointStats, "puntos discretos");
+        updateExportData(data.geojson, "points");
         statusBox.textContent = "Simulación completada (Puntos).";
       }
 
@@ -411,3 +472,6 @@ async function runSimulation() {
 }
 
 runButton.addEventListener("click", runSimulation);
+if (exportButton) {
+  exportButton.addEventListener("click", downloadCurrentGeoJson);
+}

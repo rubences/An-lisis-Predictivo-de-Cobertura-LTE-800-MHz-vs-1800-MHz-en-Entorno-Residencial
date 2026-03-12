@@ -68,6 +68,13 @@ body {
   cursor: pointer;
 }
 
+.panel button.secondary {
+  margin-top: 8px;
+  background: #f1f5ff;
+  color: #0052cc;
+  border: 1px solid #c4ccd5;
+}
+
 .panel button:disabled {
   opacity: 0.6;
   cursor: wait;
