@@ -77,20 +77,113 @@ Ejemplo de payload:
 
 ### 4) Motor de cálculo dinámico
 
-- OSMnx descarga dinámicamente la red viaria en un radio alrededor de la coordenada.
-- Se muestrean puntos sobre calles y se calcula distancia real al eNodeB.
-- Se calcula RSRP (COST-231/Okumura-Hata según frecuencia) por punto.
-- El backend devuelve GeoJSON con atributos de cobertura.
+**Ray-Tracing Simplificado (Line of Sight - LOS):**
+- OSMnx descarga dinámicamente la red viaria y los **polígonos de edificios reales** de OpenStreetMap.
+- Se muestrean puntos sobre calles en una malla de 30m (configurable).
+- Para cada punto, se traza una línea imaginaria (LOS) desde la antena hasta el punto receptor.
+- Se cuentan cuántos edificios **intersectan la línea LOS** (ray-tracing simplificado).
+- Cada edificio atravesado añade una atenuación adicional (default **3 dB**, configurable) al path loss.
+- Si el receptor está dentro de un edificio, se aplica penalización extra:
+  - **15 dB** para 800 MHz
+  - **20 dB** para 1800 MHz (mayor penetración en 1800)
+
+**Fórmula actualizada de RSRP:**
+$$RSRP = P_{tx} + G_{tx} - (PL_{Hata} + N \times L_{muro}) + G_{UE} - Márgenes - L_{interior}$$
+
+Donde:
+- $N$: número de edificios que la reintercepción la LOS
+- $L_{muro}$: atenuación por edificio (ej. 3 dB)
+- $L_{interior}$: atenuación extra si el punto está dentro de un edificio
+
+**Dual eNodeB con Best-Server Selection:**
+- Permite colocar **dos antenas simultáneamente** en el mismo escenario.
+- Calcula RSRP para ambas antenas de forma independiente.
+- El frontend muestra **el mejor servidor** (highest RSRP) en cada punto.
+- Útil para evaluar:
+  - Solapamiento y mejora de cobertura
+  - Handover feasibility (zona de equilibrio)
+  - Distribución de carga entre dos sitios
 
 ### 5) Visualización de resultados
 
+**Modo Puntos (GeoJSON):**
 - El frontend renderiza la capa georreferenciada sobre Leaflet.
-- Colores:
-	- Verde: `RSRP > -105 dBm`
-	- Rojo: `RSRP <= -105 dBm`
+- En modo **monocelda**: colores verde/rojo según RSRP > -105 dBm
+- En modo **dual eNodeB**: colores azul (servidor 1) y naranja (servidor 2)
+- Popups con RSRP, distancia, interior, número de edificios en LOS y servidor activo
 
-## Salidas en `resultados/`
+**Modo Raster (PNG Heatmap):**
+- Heatmap visual denso con gradiente de colores.
+- Rojo profundo: RSRP < -120 dBm (sin servicio).
+- Verde: RSRP > -70 dBm (excelente).
+- Centrado en umbral -105 dBm para clara separación de zonas cubiertas/ciegas.
 
+### 6) Parámetros de la API
+
+POST `/api/simulate`:
+
+```json
+{
+  "lat": 40.4916,
+  "lon": -3.7212,
+  "lat2": null,
+  "lon2": null,
+  "frecuencia_mhz": 800,
+  "radio_m": 500,
+  "umbral_dbm": -105,
+  "muestreo_m": 30,
+  "output_mode": "points",
+  "enable_los": true,
+  "atenuacion_muro_db": 3.0
+}
+```
+
+**Parámetros:**
+- `lat`, `lon`: Coordenadas del eNodeB 1
+- `lat2`, `lon2`: Coordenadas del eNodeB 2 (opcional, null para monocelda)
+- `enable_los`: Activa ray-tracing simplificado (conteo de edificios en LOS)
+- `atenuacion_muro_db`: Atenuación por cada edificio atravesado (0-10 dB)
+
+**Respuesta (Puntos):**
+
+```json
+{
+  "input": {...},
+  "summary": {
+    "total_points": 617,
+    "covered_points": 600,
+    "indoor_points": 120,
+    "uncovered_points": 17,
+    "coverage_pct": 97.24
+  },
+  "geojson": {
+    "type": "FeatureCollection",
+    "features": [
+      {
+        "type": "Feature",
+        "geometry": {"type": "Point", "coordinates": [-3.72, 40.49]},
+        "properties": {
+          "rsrp_dbm": -95.2,
+          "covered": true,
+          "is_indoor": false,
+          "num_buildings_los": 2,
+          "server": "1",
+          "distancia_km": 0.15
+        }
+      }
+    ]
+  }
+}
+```
+
+**Respuesta (Raster):**
+
+```json
+{
+  "input": {...},
+  "summary": {...},
+  "raster_b64": "data:image/png;base64,..."
+}
 - `figura1_perdida_trayecto.png`
 - `figura2_rsrp_vs_distancia.png`
 - `figura3_radios_cobertura.png`
@@ -102,6 +195,73 @@ Ejemplo de payload:
 - `figura9_solape_dual_enodeb.png`
 - `tabla_cobertura.csv`
 - `tabla_cobertura_geoespacial.csv`
+
+### 7) Interfaz de Usuario (UI)
+
+**Colocación de antenas:**
+- **eNodeB 1**: Clic normal en el mapa para capturar la primera antena.
+- **eNodeB 2** (Dual mode): Activa el checkbox "Dual eNodeB" y luego **Ctrl+clic** en el mapa para capturar la segunda antena.
+
+**Opciones de Ray-Tracing:**
+- **Activar ray-tracing + LOS**: Checkbox para habilitar conteo de edificios en la línea de vista.
+  - Desactivado: usa solo path loss de Hata.
+  - Activado: suma atenuación por cada edificio que la LOS atraviesa.
+- **Atenuación por edificio (dB)**: Control deslizante para ajustar cuántos dB resta cada edificio en la LOS (default 3 dB).
+
+**Resultado Dual eNodeB:**
+- En modo points (GeoJSON), cada punto muestra el color del **mejor servidor**:
+  - Azul: servidor 1
+  - Naranja: servidor 2
+- Popup detallado incluye `server: "1"` o `server: "2"` y número de edificios en LOS.
+
+### 8) Ejemplos de uso con Ray-Tracing y Dual eNodeB
+
+**Ejemplo 1: Monocelda con ray-tracing**
+```json
+POST /api/simulate
+{
+  "lat": 40.4916,
+  "lon": -3.7212,
+  "lat2": null,
+  "lon2": null,
+  "frecuencia_mhz": 800,
+  "radio_m": 500,
+  "enable_los": true,
+  "atenuacion_muro_db": 3.0,
+  "output_mode": "points"
+}
+```
+
+**Ejemplo 2: Dual eNodeB sin ray-tracing (solo path loss)**
+```json
+POST /api/simulate
+{
+  "lat": 40.4916,
+  "lon": -3.7212,
+  "lat2": 40.4850,
+  "lon2": -3.7100,
+  "frecuencia_mhz": 800,
+  "radio_m": 500,
+  "enable_los": false,
+  "output_mode": "points"
+}
+```
+
+**Ejemplo 3: Dual eNodeB con ray-tracing y atenuación variable**
+```json
+POST /api/simulate
+{
+  "lat": 40.4916,
+  "lon": -3.7212,
+  "lat2": 40.4850,
+  "lon2": -3.7100,
+  "frecuencia_mhz": 1800,
+  "radio_m": 500,
+  "enable_los": true,
+  "atenuacion_muro_db": 5.0,
+  "output_mode": "raster"
+}
+```
 
 ## Criterio operativo en mapas
 

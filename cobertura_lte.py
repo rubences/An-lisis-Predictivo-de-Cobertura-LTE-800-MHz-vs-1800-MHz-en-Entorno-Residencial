@@ -254,6 +254,120 @@ def rsrp_dbm(
     return rx
 
 
+# ---------------------------------------------------------------------------
+# Ray-Tracing simplificado: conteo de edificios en LOS
+# ---------------------------------------------------------------------------
+
+
+def count_buildings_in_los(
+    tx_point,
+    rx_point,
+    buildings_gdf,
+) -> int:
+    """Cuenta cuántos edificios atraviesa la línea de vista (LOS) entre TX y RX.
+    
+    Parámetros
+    ----------
+    tx_point : shapely.geometry.Point
+        Coordenadas de la antena transmisora (en misma proyección que buildings_gdf)
+    rx_point : shapely.geometry.Point
+        Coordenadas del punto receptor (en misma proyección que buildings_gdf)
+    buildings_gdf : geopandas.GeoDataFrame
+        GeoDataFrame con polígonos de edificios
+    
+    Devuelve
+    --------
+    count : int
+        Número de edificios que la línea LOS intersecta
+    """
+    if buildings_gdf is None or buildings_gdf.empty:
+        return 0
+    
+    try:
+        from shapely.geometry import LineString
+        
+        los_line = LineString([tx_point.coords[0], rx_point.coords[0]])
+        
+        count = 0
+        for _, building in buildings_gdf.iterrows():
+            geom = building.geometry
+            if geom is not None and not geom.is_empty:
+                if los_line.intersects(geom):
+                    count += 1
+        return count
+    except Exception:
+        return 0
+
+
+def rsrp_dbm_with_los(
+    frecuencia_mhz: float,
+    distancia_km: float,
+    scenario: dict,
+    link_budget: dict,
+    tx_point,
+    rx_point,
+    buildings_gdf,
+    atenuacion_muro_db: float = 3.0,
+    incluir_penetracion: bool = True,
+    entorno: str = "urbano",
+) -> tuple[float, int, bool]:
+    """Calcula RSRP usando ray-tracing simplificado con conteo de edificios en LOS.
+    
+    RSRP = EIRP – (PL_Hata + N×L_muro) + G_UE – Márgenes [– L_interior si aplica]
+    
+    Parámetros
+    ----------
+    frecuencia_mhz : frecuencia en MHz
+    distancia_km : distancia BS-RX en km
+    scenario : dict con parámetros scenario
+    link_budget : dict con parámetros link budget
+    tx_point : shapely.geometry.Point (coordenadas proyectadas)
+    rx_point : shapely.geometry.Point (coordenadas proyectadas)
+    buildings_gdf : geopandas.GeoDataFrame con edificios proyectados
+    atenuacion_muro_db : atenuación por edificio atravesado (dB)
+    incluir_penetracion : bool
+    entorno : "urbano" o "suburbano"
+    
+    Devuelve
+    --------
+    (rsrp, num_buildings, is_interior) : tuple
+        - rsrp: RSRP calculado (dBm)
+        - num_buildings: número de edificios en LOS
+        - is_interior: True si el punto está dentro de un edificio
+    """
+    lp = perdida_trayecto(
+        frecuencia_mhz,
+        distancia_km,
+        scenario["altura_bs_m"],
+        scenario["altura_movil_m"],
+        entorno,
+    )
+    
+    num_buildings = count_buildings_in_los(tx_point, rx_point, buildings_gdf)
+    atenuacion_los = num_buildings * atenuacion_muro_db
+    
+    is_interior = False
+    if buildings_gdf is not None and not buildings_gdf.empty:
+        for _, building in buildings_gdf.iterrows():
+            if building.geometry.contains(rx_point):
+                is_interior = True
+                break
+    
+    rx = (
+        eirp_dbm(link_budget)
+        - (lp + atenuacion_los)
+        + link_budget["ganancia_antena_ue_dbi"]
+        - link_budget["margen_desvanecimiento_db"]
+        - link_budget["margen_interferencia_db"]
+    )
+    
+    if is_interior and incluir_penetracion:
+        penalizacion_interior = 20.0 if frecuencia_mhz > 1500 else 15.0
+        rx -= penalizacion_interior
+    
+    return rx, num_buildings, is_interior
+
+
 def radio_cobertura_km(
     frecuencia_mhz: float,
     umbral_dbm: float,

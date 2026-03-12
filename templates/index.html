@@ -17,11 +17,25 @@
     <section class="panel">
       <h2>Parámetros</h2>
 
+      <h3>eNodeB 1</h3>
       <label for="lat">Latitud</label>
       <input id="lat" type="text" readonly placeholder="Haz clic en el mapa" />
 
       <label for="lon">Longitud</label>
       <input id="lon" type="text" readonly placeholder="Haz clic en el mapa" />
+
+      <label for="dualMode">
+        <input type="checkbox" id="dualMode" /> Dual eNodeB (dos antenas)
+      </label>
+
+      <div id="dualControls" style="display: none; border: 1px solid #ddd; padding: 10px; border-radius: 4px; margin: 10px 0;">
+        <h3>eNodeB 2</h3>
+        <label for="lat2">Latitud</label>
+        <input id="lat2" type="text" readonly placeholder="Haz clic en el mapa (Ctrl+clic)" />
+
+        <label for="lon2">Longitud</label>
+        <input id="lon2" type="text" readonly placeholder="Haz clic en el mapa (Ctrl+clic)" />
+      </div>
 
       <label for="frequency">Frecuencia</label>
       <select id="frequency">
@@ -32,16 +46,44 @@
       <label for="radius">Radio (m)</label>
       <input id="radius" type="number" min="100" max="3000" step="50" value="500" />
 
+      <label for="outputMode">Modo de Salida</label>
+      <select id="outputMode">
+        <option value="points">Puntos (GeoJSON)</option>
+        <option value="raster">Raster (PNG Heatmap)</option>
+      </select>
+
+      <label for="visualizationMode">Visualización Interpolada</label>
+      <select id="visualizationMode">
+        <option value="points">Puntos discretos</option>
+        <option value="hex">Hex-Binning (IDW)</option>
+      </select>
+
+      <h3>Ray-Tracing (Edificios)</h3>
+      <label for="enableLOS">
+        <input type="checkbox" id="enableLOS" checked /> Activar ray-tracing + LOS
+      </label>
+
+      <label for="attenuationWall">Atenuación por edificio (dB)</label>
+      <input id="attenuationWall" type="number" min="0" max="10" step="0.5" value="3" />
+
       <button id="runSimulation">Ejecutar Simulación</button>
 
       <div id="status" class="status">Esperando coordenadas...</div>
 
       <div id="summary" class="summary"></div>
 
+      <div id="rasterContainer" style="display: none;">
+        <img id="rasterImage" src="" alt="Heatmap" style="width: 100%; border-radius: 6px; margin-top: 10px;" />
+      </div>
+
       <div class="legend">
         <h3>Leyenda</h3>
         <div><span class="dot covered"></span> Cobertura &gt; -105 dBm</div>
         <div><span class="dot uncovered"></span> Zona sin cobertura</div>
+        <div style="margin-top: 6px; font-size: 0.75rem;">
+          🏠 Interior: -15/20 dBm penalización<br/>
+          📡 LOS: Conteo de edificios atravesados
+        </div>
       </div>
     </section>
 
@@ -51,6 +93,7 @@
   </main>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
   <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>
