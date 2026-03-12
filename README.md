@@ -45,6 +45,12 @@ Incluye backend/API (`Flask`, `flask-cors`) para simulación interactiva web.
 python app.py
 ```
 
+Arranque completo (compilar + testear + lanzar app) en un solo comando en Windows PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run-all.ps1
+```
+
 Abrir en navegador:
 
 `http://localhost:5000`
